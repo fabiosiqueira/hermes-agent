@@ -1650,6 +1650,9 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
+            # ...but the configured memory provider (e.g. local_sqlite) is
+            # tool-driven and safe in cron — keep it available. See #9763.
+            skip_memory_provider=False,
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

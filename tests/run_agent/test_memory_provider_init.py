@@ -90,3 +90,55 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert provider.init_kwargs["user_id"] == "open-id"
     assert provider.init_kwargs["user_id_alt"] == "union-id"
     assert provider.init_kwargs["platform"] == "feishu"
+
+
+def _build_agent(skip_memory, skip_memory_provider):
+    """Construct an AIAgent with a configured provider and mocked plugin loading.
+
+    Returns the mock for ``load_memory_provider`` so callers can assert whether
+    the external provider block ran.
+    """
+    cfg = {"memory": {"provider": "local_sqlite"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.save_config"),
+        patch("plugins.memory.load_memory_provider", return_value=None) as load_memory_provider,
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        kwargs = dict(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=skip_memory,
+        )
+        if skip_memory_provider is not None:
+            kwargs["skip_memory_provider"] = skip_memory_provider
+        AIAgent(**kwargs)
+
+    return load_memory_provider
+
+
+def test_skip_memory_provider_defaults_to_skip_memory():
+    """When skip_memory_provider is omitted it inherits skip_memory (backward compat)."""
+    # skip_memory=True, provider flag omitted -> provider also skipped
+    assert _build_agent(skip_memory=True, skip_memory_provider=None).call_count == 0
+    # skip_memory=False, provider flag omitted -> provider loaded
+    assert _build_agent(skip_memory=False, skip_memory_provider=None).call_count == 1
+
+
+def test_skip_memory_provider_decouples_from_skip_memory():
+    """Cron path: skip built-in memory but keep the external provider available."""
+    load_memory_provider = _build_agent(skip_memory=True, skip_memory_provider=False)
+    load_memory_provider.assert_called_once_with("local_sqlite")
+
+
+def test_skip_memory_provider_true_disables_provider_with_memory_on():
+    """skip_memory_provider=True suppresses the provider even when skip_memory=False."""
+    assert _build_agent(skip_memory=False, skip_memory_provider=True).call_count == 0

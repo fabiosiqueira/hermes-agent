@@ -612,7 +612,13 @@ def memory_tool(
     Returns JSON string with results.
     """
     if store is None:
-        return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
+        return tool_error(
+            "Built-in memory (MEMORY.md/USER.md) is not available here — it may be "
+            "disabled in config or skipped in this environment (e.g. cron jobs). If a "
+            "memory provider is configured, use its tools (e.g. memory_search, "
+            "memory_add) instead.",
+            success=False,
+        )
 
     if target not in {"memory", "user"}:
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)

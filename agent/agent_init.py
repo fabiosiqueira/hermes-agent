@@ -190,6 +190,7 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    skip_memory_provider: bool = None,
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
@@ -1067,9 +1068,15 @@ def init_agent(
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
+    # External memory providers are decoupled from the built-in MemoryStore:
+    # skip_memory gates MEMORY.md/USER.md, skip_memory_provider gates the
+    # configured memory.provider plugin. When omitted, the provider inherits
+    # skip_memory so all existing call sites behave exactly as before.
+    if skip_memory_provider is None:
+        skip_memory_provider = skip_memory
+    mem_config = _agent_cfg.get("memory", {})
     if not skip_memory:
         try:
-            mem_config = _agent_cfg.get("memory", {})
             agent._memory_enabled = mem_config.get("memory_enabled", False)
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
@@ -1088,7 +1095,7 @@ def init_agent(
     # Memory provider plugin (external — one at a time, alongside built-in)
     # Reads memory.provider from config to select which plugin to activate.
     agent._memory_manager = None
-    if not skip_memory:
+    if not skip_memory_provider:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 
