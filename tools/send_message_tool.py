@@ -129,8 +129,8 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "enum": ["send", "list", "edit"],
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'edit' replaces the text of a previously sent message — pass 'message_ref' (the reference returned by a prior send) and the new 'message'. Telegram only."
             },
             "target": {
                 "type": "string",
@@ -139,6 +139,10 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+            },
+            "message_ref": {
+                "type": "object",
+                "description": "Required when action='edit'. The reference of the message to edit, as returned by a prior send: must include 'channel' (e.g. 'telegram'), 'chat_id', and 'message_id'. Accepts either an object or a JSON string."
             }
         },
         "required": []
@@ -153,6 +157,9 @@ def send_message_tool(args, **kw):
     if action == "list":
         return _handle_list()
 
+    if action == "edit":
+        return _handle_edit(args)
+
     return _handle_send(args)
 
 
@@ -163,6 +170,69 @@ def _handle_list():
         return json.dumps({"targets": format_directory_for_display()})
     except Exception as e:
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
+
+
+def _handle_edit(args):
+    """Edit the text of a previously sent message in place.
+
+    Telegram-only for now (hermes#62). Takes ``message_ref`` (the reference a
+    prior send returned — must carry ``channel``, ``chat_id`` and
+    ``message_id``) plus the new ``message`` body, and routes through the
+    standalone one-shot ``_edit_telegram``. Other platforms return a clear
+    error so callers know edit isn't wired for them yet.
+    """
+    message_ref = args.get("message_ref")
+    message = args.get("message", "")
+    if not message_ref:
+        return tool_error("'message_ref' is required when action='edit'")
+    if not message:
+        return tool_error("'message' is required when action='edit'")
+
+    if isinstance(message_ref, str):
+        try:
+            message_ref = json.loads(message_ref)
+        except (ValueError, TypeError):
+            return tool_error("'message_ref' must be an object or a JSON string")
+    if not isinstance(message_ref, dict):
+        return tool_error("'message_ref' must be an object with 'channel', 'chat_id' and 'message_id'")
+
+    platform_name = str(message_ref.get("channel", "")).strip().lower()
+    chat_id = message_ref.get("chat_id")
+    message_id = message_ref.get("message_id")
+    if platform_name != "telegram":
+        return tool_error(
+            f"action='edit' is currently only supported for telegram; "
+            f"got channel='{platform_name or 'unknown'}'"
+        )
+    if not chat_id:
+        return tool_error("'message_ref' is missing 'chat_id' (required to edit a telegram message)")
+    if not message_id:
+        return tool_error("'message_ref' is missing 'message_id' (required to edit a telegram message)")
+
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return tool_error("Interrupted")
+
+    try:
+        from gateway.config import load_gateway_config, Platform
+        config = load_gateway_config()
+    except Exception as e:
+        return json.dumps(_error(f"Failed to load gateway config: {e}"))
+
+    pconfig = config.platforms.get(Platform.TELEGRAM)
+    if not pconfig or not pconfig.enabled:
+        return tool_error("Platform 'telegram' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+
+    try:
+        from model_tools import _run_async
+        result = _run_async(
+            _edit_telegram(pconfig.token, str(chat_id), str(message_id), message)
+        )
+        if isinstance(result, dict) and "error" in result:
+            result["error"] = _sanitize_error_text(result["error"])
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps(_error(f"Edit failed: {e}"))
 
 
 def _handle_send(args):
@@ -1031,6 +1101,112 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:
         return _error(f"Telegram send failed: {e}")
+
+
+def _is_telegram_not_modified(error: Exception) -> bool:
+    """Check if a Telegram edit error means the message is already in the
+    desired state. Editing to identical content raises "message is not
+    modified" — the edit is a no-op, so treat it as success."""
+    return "message is not modified" in str(error).lower()
+
+
+async def _edit_telegram(token, chat_id, message_id, message):
+    """Edit a message's text via Telegram Bot API (one-shot, hermes#62).
+
+    Text-only mirror of ``_send_telegram``: applies the same HTML auto-detect
+    (HTML → ``parse_mode='HTML'``, otherwise markdown→MarkdownV2), honours a
+    configured proxy, treats "message is not modified" as success, and falls
+    back to plain text if the parse mode is rejected.
+    """
+    try:
+        from telegram import Bot
+        from telegram.constants import ParseMode
+
+        # Auto-detect HTML tags — if present, skip MarkdownV2 and edit as HTML.
+        _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
+
+        if _has_html:
+            formatted = message
+            edit_parse_mode = ParseMode.HTML
+        else:
+            try:
+                from gateway.platforms.telegram import TelegramAdapter
+                _adapter = TelegramAdapter.__new__(TelegramAdapter)
+                formatted = _adapter.format_message(message)
+            except Exception:
+                formatted = message
+            edit_parse_mode = ParseMode.MARKDOWN_V2
+
+        # Honour a configured proxy (same as _send_telegram).
+        try:
+            from gateway.platforms.base import resolve_proxy_url
+            _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
+        except Exception:
+            _tg_proxy = None
+        if _tg_proxy:
+            try:
+                from telegram.request import HTTPXRequest
+                logger.info("send_message: standalone Telegram edit routed through proxy %s", _tg_proxy)
+                bot = Bot(
+                    token=token,
+                    request=HTTPXRequest(proxy=_tg_proxy),
+                    get_updates_request=HTTPXRequest(proxy=_tg_proxy),
+                )
+            except Exception as _proxy_err:
+                logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _proxy_err)
+                bot = Bot(token=token)
+        else:
+            bot = Bot(token=token)
+        int_chat_id = int(chat_id)
+        int_message_id = int(message_id)
+
+        try:
+            await bot.edit_message_text(
+                chat_id=int_chat_id, message_id=int_message_id,
+                text=formatted, parse_mode=edit_parse_mode,
+            )
+        except Exception as edit_error:
+            # Editing to identical content — the message already reflects the
+            # desired state, so report success rather than an error.
+            if _is_telegram_not_modified(edit_error):
+                return {
+                    "success": True,
+                    "platform": "telegram",
+                    "chat_id": str(chat_id),
+                    "message_id": str(message_id),
+                    "not_modified": True,
+                }
+            if "parse" in str(edit_error).lower() or "markdown" in str(edit_error).lower() or "html" in str(edit_error).lower():
+                logger.warning(
+                    "Parse mode %s failed in _edit_telegram, falling back to plain text: %s",
+                    edit_parse_mode,
+                    _sanitize_error_text(edit_error),
+                )
+                if not _has_html:
+                    try:
+                        from gateway.platforms.telegram import _strip_mdv2
+                        plain = _strip_mdv2(formatted)
+                    except Exception:
+                        plain = message
+                else:
+                    plain = message
+                await bot.edit_message_text(
+                    chat_id=int_chat_id, message_id=int_message_id,
+                    text=plain, parse_mode=None,
+                )
+            else:
+                raise
+
+        return {
+            "success": True,
+            "platform": "telegram",
+            "chat_id": str(chat_id),
+            "message_id": str(message_id),
+        }
+    except ImportError:
+        return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
+    except Exception as e:
+        return _error(f"Telegram edit failed: {e}")
 
 
 async def _send_slack(token, chat_id, message):
