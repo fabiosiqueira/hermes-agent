@@ -198,10 +198,13 @@ def run_oneshot(
         max_size=64 * 1024, mode="w+", encoding="utf-8", errors="replace"
     )
 
-    response = ""
+    response: Optional[str] = None
+    failure: BaseException | None = None
     try:
-        try:
-            with redirect_stdout(devnull), redirect_stderr(stderr_buf):
+        # stderr goes to a buffer (not devnull) so a silent failure can
+        # surface the captured tail; stdout stays on devnull. See #30623.
+        with redirect_stdout(devnull), redirect_stderr(stderr_buf):
+            try:
                 response = _run_agent(
                     prompt,
                     model=model,
@@ -209,33 +212,50 @@ def run_oneshot(
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
                 )
-        except BaseException:
-            # Surface the captured stderr (which would otherwise be silently
-            # discarded) before letting the exception propagate.
-            _dump_stderr_buf(stderr_buf, real_stderr)
-            raise
+            except BaseException as exc:  # noqa: BLE001
+                # Capture anything that escapes the agent (including OSError
+                # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
+                # KeyboardInterrupt, SystemExit, etc.) so we can surface it on
+                # the real stderr instead of crashing past the redirect with a
+                # traceback that the caller never sees. A silent exit in a
+                # cron / SSH / subprocess context is the worst failure mode.
+                failure = exc
     finally:
         try:
             devnull.close()
         except Exception:
             pass
 
-    if response:
-        real_stdout.write(response)
-        if not response.endswith("\n"):
-            real_stdout.write("\n")
-        real_stdout.flush()
-        try:
-            stderr_buf.close()
-        except Exception:
-            pass
-        return 0
+    if failure is not None:
+        # Re-raise control-flow exceptions so the parent handles them as usual
+        # (Ctrl-C / explicit sys.exit() inside the agent).
+        if isinstance(failure, (KeyboardInterrupt, SystemExit)):
+            raise failure
+        real_stderr.write(f"hermes -z: agent failed: {failure}\n")
+        real_stderr.flush()
+        # Surface the captured stderr tail that would otherwise be discarded.
+        _dump_stderr_buf(stderr_buf, real_stderr)
+        return 1
 
-    # Empty response — the agent ran to completion but produced nothing.
-    # Without the captured stderr the operator has zero signal; surface
-    # the tail so they can diagnose (rate limits, auth failures, model
-    # returned empty, etc.) instead of seeing a silent exit 0.
-    _dump_stderr_buf(stderr_buf, real_stderr, header="hermes -z: empty response; stderr tail follows:\n")
+    if not (response or "").strip():
+        # Empty response — the agent ran to completion but produced nothing.
+        # Without the captured stderr the operator has zero signal; surface
+        # the tail so they can diagnose (rate limits, auth failures, model
+        # returned empty, etc.) instead of a silent exit.
+        real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
+        real_stderr.flush()
+        _dump_stderr_buf(stderr_buf, real_stderr, header="hermes -z: empty response; stderr tail follows:\n")
+        return 1
+
+    assert response is not None  # narrowed by the empty-response guard above
+    real_stdout.write(response)
+    if not response.endswith("\n"):
+        real_stdout.write("\n")
+    real_stdout.flush()
+    try:
+        stderr_buf.close()
+    except Exception:
+        pass
     return 0
 
 
