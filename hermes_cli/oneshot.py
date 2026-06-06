@@ -21,11 +21,9 @@ Env var fallbacks (used when the corresponding arg is not passed):
 
 from __future__ import annotations
 
-import faulthandler
 import logging
 import os
 import sys
-import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
@@ -173,37 +171,16 @@ def run_oneshot(
     os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
 
-    # Wire faulthandler to the real stderr fd before any redirect so that a
-    # C-level crash (SIGSEGV/SIGABRT inside a native extension) gets a stack
-    # trace to the operator's terminal. `contextlib.redirect_stderr` only
-    # swaps `sys.stderr`; faulthandler holds the underlying fd, so it
-    # survives the redirect block below.
-    if not faulthandler.is_enabled():
-        try:
-            faulthandler.enable(file=sys.stderr, all_threads=True)
-        except (RuntimeError, OSError):
-            # Some embedded contexts don't expose a real stderr fd; the
-            # fallback is silently dropping the trace — same as today.
-            pass
-
-    # Redirect stderr to a temp buffer (not /dev/null) so that, on a
-    # silent failure, we can surface what the agent actually printed
-    # instead of leaving the operator with zero signal. stdout still
-    # goes to devnull — the only stdout we want is the final response,
-    # which we write to the real stdout below.
-    real_stderr = sys.stderr
+    # Redirect stderr AND stdout to devnull for the entire call tree.
+    # We'll print the final response to the real stdout at the end.
     real_stdout = sys.stdout
+    real_stderr = sys.stderr
     devnull = open(os.devnull, "w", encoding="utf-8")
-    stderr_buf = tempfile.SpooledTemporaryFile(
-        max_size=64 * 1024, mode="w+", encoding="utf-8", errors="replace"
-    )
 
     response: Optional[str] = None
     failure: BaseException | None = None
     try:
-        # stderr goes to a buffer (not devnull) so a silent failure can
-        # surface the captured tail; stdout stays on devnull. See #30623.
-        with redirect_stdout(devnull), redirect_stderr(stderr_buf):
+        with redirect_stdout(devnull), redirect_stderr(devnull):
             try:
                 response = _run_agent(
                     prompt,
@@ -219,6 +196,7 @@ def run_oneshot(
                 # the real stderr instead of crashing past the redirect with a
                 # traceback that the caller never sees. A silent exit in a
                 # cron / SSH / subprocess context is the worst failure mode.
+                # See #30623.
                 failure = exc
     finally:
         try:
@@ -233,18 +211,11 @@ def run_oneshot(
             raise failure
         real_stderr.write(f"hermes -z: agent failed: {failure}\n")
         real_stderr.flush()
-        # Surface the captured stderr tail that would otherwise be discarded.
-        _dump_stderr_buf(stderr_buf, real_stderr)
         return 1
 
     if not (response or "").strip():
-        # Empty response — the agent ran to completion but produced nothing.
-        # Without the captured stderr the operator has zero signal; surface
-        # the tail so they can diagnose (rate limits, auth failures, model
-        # returned empty, etc.) instead of a silent exit.
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
-        _dump_stderr_buf(stderr_buf, real_stderr, header="hermes -z: empty response; stderr tail follows:\n")
         return 1
 
     assert response is not None  # narrowed by the empty-response guard above
@@ -252,38 +223,7 @@ def run_oneshot(
     if not response.endswith("\n"):
         real_stdout.write("\n")
     real_stdout.flush()
-    try:
-        stderr_buf.close()
-    except Exception:
-        pass
     return 0
-
-
-def _dump_stderr_buf(buf, sink, *, header: str = "", tail_bytes: int = 8 * 1024) -> None:
-    """Write the tail of `buf` to `sink`. No-op on empty buffer."""
-    try:
-        buf.seek(0, 2)  # to end
-        size = buf.tell()
-        if size <= 0:
-            return
-        buf.seek(max(0, size - tail_bytes))
-        data = buf.read()
-    except Exception:
-        return
-    if not data:
-        return
-    if header:
-        try:
-            sink.write(header)
-        except Exception:
-            pass
-    try:
-        sink.write(data)
-        if not data.endswith("\n"):
-            sink.write("\n")
-        sink.flush()
-    except Exception:
-        pass
 
 
 def _create_session_db_for_oneshot():
