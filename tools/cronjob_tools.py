@@ -477,6 +477,8 @@ def cronjob(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    max_turns: Optional[int] = None,
+    timeout: Optional[Union[int, float]] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -544,6 +546,8 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 profile=_normalize_optional_job_value(profile),
                 no_agent=_no_agent,
+                max_turns=max_turns,
+                timeout=timeout,
             )
             return json.dumps(
                 {
@@ -695,6 +699,12 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if max_turns is not None:
+                # 0 clears the cap — update_job() normalizes (invalid → None).
+                updates["max_turns"] = max_turns
+            if timeout is not None:
+                # 0 clears the cap — update_job() normalizes (invalid → None).
+                updates["timeout"] = timeout
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -834,6 +844,14 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
+            "max_turns": {
+                "type": "integer",
+                "description": "Optional per-job ceiling on agent turns (API call iterations) for LLM-driven jobs. Overrides the global config.yaml agent.max_turns for this job only. Use a low value (e.g. 25-30) for well-delimited recurring jobs so a stuck session cannot burn quota. On update, pass 0 to clear (fall back to global config). Ignored when no_agent=True."
+            },
+            "timeout": {
+                "type": "number",
+                "description": "Optional per-job wall-clock ceiling in seconds for the whole agent run. Unlike the global HERMES_CRON_TIMEOUT (inactivity-based — retry storms count as activity and never trip it), this caps total runtime: when it elapses the job is interrupted regardless of activity. On update, pass 0 to clear. Ignored when no_agent=True (script jobs have their own timeout)."
+            },
             "profile": {
                 "type": "string",
                 "description": "Optional Hermes profile name to run the job under. When set, the scheduler resolves that profile, applies a context-local Hermes home override, loads that profile's config/.env for the run, and bridges HERMES_HOME into subprocesses. Any temporary process-environment changes from profile .env loading are restored after the job exits. Use 'default' for the root Hermes profile. Named profiles must already exist. When unset (default), preserves the scheduler's existing profile. On update, pass an empty string to clear. Jobs with profile run sequentially (not parallel) to keep profile-scoped runtime state isolated."
@@ -894,6 +912,8 @@ registry.register(
         workdir=args.get("workdir"),
         profile=args.get("profile"),
         no_agent=args.get("no_agent"),
+        max_turns=args.get("max_turns"),
+        timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,
