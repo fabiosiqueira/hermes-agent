@@ -4,7 +4,7 @@
 > Aceita: gotchas de conflito recorrente, termos de dedup-search que funcionaram, rotas de carry. Cap 8 entradas, ≤180 chars.
 > Restaurada do backup global em 2026-08-16, agora local ao projeto hermes-engine (era `~/.claude/skills/hermes-sync`).
 
-- **Mapa de carries perdeu o caminho antigo** (`defi-project`/memory/archive foi zerado em 2026-08-16). Fonte agora é o auto-memory do PRÓPRIO projeto hermes-engine — se não existir ainda, a Fase 1/3 reconstrói do zero via `gh pr list` + `git log`, não trata como erro.
+- **Mapa de carries migrou para o Graphiti MCP** (`group_id=hermes-engine`; o antigo `defi-project`/memory/archive foi descontinuado 2026-08-16). Se `search_nodes`/`search_memory_facts` não devolver nada, a Fase 1/3 reconstrói do zero via `gh pr list` + `git log` — não trata como erro. MCP desconectado → avisa o operador, cai no fallback STATE.md.
 - **Contagem bruta ≠ carries líquidos, e conflito nessa branch é ~90% criss-cross:** pares add+revert se cancelam; cheque diff líquido por arquivo (`git diff upstream/main local/all-fixes -- <f>`) E se merge commit anterior já tocou o arquivo — sem a 2ª checagem, `--theirs` descarta resolução humana em silêncio.
 - **DEDUP antes de tudo** — abrir PR, abrir issue-âncora E aprumar: #40652 duplicou #23715; #45808 duplicou #27977 (3 semanas mais velho, rebase teria sido lixo). Achou alheio → doar o delta lá, nunca competir. Termo que funcionou: "skill_manager locked frontmatter".
 - **Convergência sem rota merged:** produção absorve por refactor próprio (memory-bridge → `MemoryManager.notify_memory_tool_write`). Ação: `--theirs` no core (só se o único delta nosso lá for o carry) + `grep -rn <helper>` p/ caçar órfão — carry que auto-mergeia limpo em arquivo NÃO-conflitado vira dead code.

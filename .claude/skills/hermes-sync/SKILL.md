@@ -18,7 +18,7 @@ Rodamos `local/all-fixes` = `upstream/main` + carries (features/fixes nossos que
 5. **Aderir à produção.** Onde `upstream/main` já provê a capacidade da nossa proposta — por rota-PR merged OU por refactor próprio deles — **convergir**: tomar a versão de produção, remover órfão residual, fechar nosso PR como superseded — **mesmo que a rota-PR/carry siga OPEN**. Grep a produção (`git show upstream/main:<file>`) antes de assumir que só a rota merged resolve. Rebase de PR antigo: upstream pode ter REMOVIDO feature que a PR carregava como contexto → mantê-la cega ressuscita dead code (NameError); isole adições reais com `git show <commit> | grep '^+'`.
 6. **Aprumar nossos PRs abertos.** PR OPEN nosso não é espera passiva: num repo gigante o maintainer só olha *mergeável + verde + issue-linked*. Manter cada um rebasado sobre `upstream/main`, CI verde, e cross-ref a issue existente do maintainer (dedup: nunca abrir issue órfã). Falha de CI pode ser flake alheio — diagnostique o job ANTES de "consertar"; nunca enfraqueça teste de terceiro. Falha só local = deps ausentes reproduzem idêntica em `upstream/main` puro.
 
-**Antes de executar:** leia `learned.md` (conflitos recorrentes, termos de dedup-search que funcionaram, rotas de carry). **Ao fim:** registre gotchas novos lá, e persista o mapa de rotas no auto-memory do projeto (tipo `project`, nome `hermes-carry-pr-routes`) — não em caminho hardcoded.
+**Antes de executar:** leia `learned.md` (conflitos recorrentes, termos de dedup-search que funcionaram, rotas de carry). **Ao fim:** registre gotchas novos lá, e persista o mapa de rotas no Graphiti MCP (`add_memory`, `group_id=hermes-engine`) — fonte de verdade da memória durável do workspace.
 
 | Fase | O que faz | Auto / Aprovação |
 | --- | --- | --- |
@@ -27,7 +27,7 @@ Rodamos `local/all-fixes` = `upstream/main` + carries (features/fixes nossos que
 | **2. Sync do fork** | FF `origin/main`←`upstream/main` (só se FF puro); merge `upstream/main`→`local/all-fixes`. Conflito → PARA | aprovação |
 | **3. Reconciliação de carries** | lista carries; carrega mapa da memória (se existir; senão reconstrói do zero via `git log` + `gh`); re-valida cada rota; **checa adesão-à-produção (princípio 5) por carry**; árvore de decisão | auto audita / aprovação p/ agir |
 | **3b. Aprumar PRs abertos** | p/ cada PR nosso OPEN não-superseded: rebase sobre `upstream/main`, testes-alvo + `py_compile`, force-push, cross-ref issue existente (princípio 6) | auto audita / aprovação p/ agir |
-| **4. Memória + relatório** | atualiza o mapa de rotas no auto-memory; imprime tabela-resumo | auto |
+| **4. Memória + relatório** | atualiza o mapa de rotas no Graphiti (`group_id=hermes-engine`); imprime tabela-resumo | auto |
 
 ## Quando usar
 
@@ -132,7 +132,7 @@ git fetch upstream "pull/<n>/head" && git merge-tree --write-tree upstream/main 
 
 ### 4. Memória + relatório (AUTO)
 
-Reescreve o mapa de rotas no auto-memory do projeto (tipo `project`) com o estado revalidado. Imprime tabela-resumo: destino de cada PR nosso + rota de cada carry.
+Reescreve o mapa de rotas no Graphiti (`add_memory`, `group_id=hermes-engine`) com o estado revalidado. Se o MCP estiver desconectado (`claude mcp list`), avisa o operador e cai no fallback STATE.md — nunca troca de destino em silêncio. Imprime tabela-resumo: destino de cada PR nosso + rota de cada carry.
 
 ## Red flags — PARE
 
@@ -160,4 +160,4 @@ Reescreve o mapa de rotas no auto-memory do projeto (tipo `project`) com o estad
 | Carries | `git log upstream/main..local/all-fixes --no-merges` (cheque pares add+revert) |
 | Resolução de conflito | integra carry SOBRE control-flow upstream, superset limpo + testes-alvo + `py_compile` |
 | Dedup obrigatório | `gh pr list --search "<termos>" --state all -R NousResearch/hermes-agent` antes de abrir PR |
-| Fonte do mapa | auto-memory do projeto (tipo `project`, nome `hermes-carry-pr-routes`) — lê → re-valida → reescreve |
+| Fonte do mapa | Graphiti MCP (`group_id=hermes-engine`) — `search_nodes`/`search_memory_facts` lê → re-valida → `add_memory` reescreve; MCP fora do ar → fallback STATE.md |
