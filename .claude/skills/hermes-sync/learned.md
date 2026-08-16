@@ -1,0 +1,15 @@
+# learned — hermes-sync
+
+> Auto-evolutivo. Leia antes de executar; atualize ao fim de cada sync.
+> Aceita: gotchas de conflito recorrente, termos de dedup-search que funcionaram, rotas de carry. Cap 8 entradas, ≤180 chars.
+> Restaurada do backup global em 2026-08-16, agora local ao projeto hermes-engine (era `~/.claude/skills/hermes-sync`).
+
+- **Mapa de carries perdeu o caminho antigo** (`defi-project`/memory/archive foi zerado em 2026-08-16). Fonte agora é o auto-memory do PRÓPRIO projeto hermes-engine — se não existir ainda, a Fase 1/3 reconstrói do zero via `gh pr list` + `git log`, não trata como erro.
+- **Contagem bruta ≠ carries líquidos, e conflito nessa branch é ~90% criss-cross:** pares add+revert se cancelam; cheque diff líquido por arquivo (`git diff upstream/main local/all-fixes -- <f>`) E se merge commit anterior já tocou o arquivo — sem a 2ª checagem, `--theirs` descarta resolução humana em silêncio.
+- **DEDUP antes de tudo** — abrir PR, abrir issue-âncora E aprumar: #40652 duplicou #23715; #45808 duplicou #27977 (3 semanas mais velho, rebase teria sido lixo). Achou alheio → doar o delta lá, nunca competir. Termo que funcionou: "skill_manager locked frontmatter".
+- **Convergência sem rota merged:** produção absorve por refactor próprio (memory-bridge → `MemoryManager.notify_memory_tool_write`). Ação: `--theirs` no core (só se o único delta nosso lá for o carry) + `grep -rn <helper>` p/ caçar órfão — carry que auto-mergeia limpo em arquivo NÃO-conflitado vira dead code.
+- **Rebase de PR parado: o CONTEXTO apodrece, não só o código.** Upstream pode ter removido feature que a PR carregava (`profile` no cron → NameError), subido default, ou podado teste de propósito. Isole adições reais com `git show <commit> -- <file> | grep '^+'` e `git log -S <símbolo>`.
+- **Actions do fork estão DESLIGADAS no nível do repo** (confirmado 2026-08-16, `enabled:false`) — imagem do runtime é buildada pelo `build-engine.yml` do **defi-project**; nossos PRs são testados pela CI do upstream. `gh workflow list` diz `active`; o campo que vale é `actions/permissions`.
+- **Produção pode MERGEAR o OPOSTO do carry, e o auto-merge não avisa:** #77667 pinou `enabled_toolsets=["skills","terminal"]` de propósito; nosso `disabled_toolsets=["terminal"]` auto-mergeou em kwargs contraditórias e só o TESTE conflitou. Reescreva no idioma novo deles; nunca empilhe kwarg contrária.
+- **Working tree "sujo" pode ser cache de ferramenta, não estado real** (`.memsearch/` de um indexador local apareceu untracked em 2026-08-16, sem relação com git) — antes de tratar o preflight como falho, confira se o item é artefato de tooling e adicione ao `.gitignore` em vez de complicar o gate.
+- **Aprumar PR ≠ sincronizar a branch — e a branch é a que roda em produção.** Meça `git rev-list --count local/all-fixes..upstream/main` na Fase 0, não no fim; drift medido de 2314 commits em 10 dias (2026-08-06→16) mostra que o upstream é rápido demais pra assumir "ainda deve estar perto".
