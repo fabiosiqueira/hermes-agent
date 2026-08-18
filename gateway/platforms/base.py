@@ -577,6 +577,14 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.outbound_flood_guard import (
+    DEGENERATE_MIN_CHUNKS,
+    cap_chunk_fanout,
+    degenerate_repetition_guard_enabled,
+    degenerate_repetition_notice,
+    describe_degenerate_repetition,
+    resolve_max_outbound_chunks,
+)
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
@@ -7346,6 +7354,37 @@ class BasePlatformAdapter(ABC):
                 carry_lang = None
 
             chunks.append(full_chunk)
+
+        # Flood guard (#118).  A degenerate decoder loop must surface as ONE
+        # visible error rather than as a burst of chat messages of repeated
+        # noise.  Gated on the real chunk count, not on length: a repetitive
+        # payload that fits in a couple of messages is not a flood, and the
+        # split has to happen anyway to know which case this is.
+        if (
+            len(chunks) > DEGENERATE_MIN_CHUNKS
+            and degenerate_repetition_guard_enabled()
+        ):
+            _degenerate = describe_degenerate_repetition(content)
+            if _degenerate is not None:
+                logger.error(
+                    "Degenerate outbound payload suppressed: unit=%r repeats=%d "
+                    "chars=%d chunks=%d",
+                    _degenerate.unit[:8], _degenerate.repeats,
+                    _degenerate.length, len(chunks),
+                )
+                return [degenerate_repetition_notice(_degenerate)]
+
+        # Bound the fan-out before numbering (#118): whatever the content, one
+        # reply must not become an unbounded burst of platform messages.  The
+        # dropped tail is replaced by a visible notice, never silently cut.
+        _capped = cap_chunk_fanout(chunks)
+        if len(_capped) != len(chunks):
+            logger.error(
+                "Outbound fan-out capped: %d chunks requested, %d delivered "
+                "(HERMES_MAX_OUTBOUND_CHUNKS=%d)",
+                len(chunks), len(_capped), resolve_max_outbound_chunks(),
+            )
+            chunks = _capped
 
         # Append chunk indicators when the response spans multiple messages
         if len(chunks) > 1:
